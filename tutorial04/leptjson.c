@@ -6,7 +6,7 @@
 #include <assert.h>  /* assert() */
 #include <errno.h>   /* errno, ERANGE */
 #include <math.h>    /* HUGE_VAL */
-#include <stdlib.h>  /* NULL, malloc(), realloc(), free(), strtod() */
+#include <stdlib.h>  /* NULL, malloc(), realloc(), free(), strtod(), strtoul() */
 #include <string.h>  /* memcpy() */
 
 #ifndef LEPT_PARSE_STACK_INIT_SIZE
@@ -90,20 +90,51 @@ static int lept_parse_number(lept_context* c, lept_value* v) {
     return LEPT_PARSE_OK;
 }
 
+#define ISHEX(ch) (('0' <= (ch) && (ch) <= '9') || ('a' <= (ch) && (ch) <= 'f') || ('A' <= (ch) && (ch) <= 'F'))
+
 static const char* lept_parse_hex4(const char* p, unsigned* u) {
-    /* \TODO */
+	char hex[5];
+	for (int i = 0; i < 4; i++) {
+		hex[i] = *p++;
+		if (!ISHEX(hex[i])) {
+			return NULL;
+		}
+	}
+	hex[4] = '\0';
+	*u = (unsigned)strtoul(hex, NULL, 16);
     return p;
 }
 
 static void lept_encode_utf8(lept_context* c, unsigned u) {
-    /* \TODO */
+	assert(0x0000 <= u && u <= 0x10FFFF);
+	if (0x0000 <= u && u <= 0x007F) {
+		PUTC(c, (char)u);
+	}
+	else if (0x0080 <= u && u <= 0x07FF) {
+		PUTC(c, (char)(0xC0 | ((u >> 6) & 0xFF)));	// 0xC0 = 1100000
+		PUTC(c, (char)(0x80 | (u        & 0x3F)));  // 0x80 = 1000000
+	}
+	else if (0x0800 <= u && u <= 0xFFFF) {
+		PUTC(c, (char)(0xE0 | ((u >> 12) & 0xFF)));	// 0xE0 = 11100000
+		PUTC(c, (char)(0x80 | ((u >> 6)  & 0x3F))); // 0x80 = 10000000
+		PUTC(c, (char)(0x80 | (u         & 0x3F)));	// 0x80 = 10000000
+	}
+	else if (0x10000 <= u && u <= 0x10FFFF) {
+		PUTC(c, (char)(0xF0 | ((u >> 18) & 0xFF))); // 0xF0 = 11110000
+		PUTC(c, (char)(0x80 | ((u >> 12) & 0x3F))); // 0x80 = 10000000
+		PUTC(c, (char)(0x80 | ((u >> 6)  & 0x3F))); // 0x80 = 10000000
+		PUTC(c, (char)(0x80 | (u         & 0x3F))); // 0x80 = 10000000
+	}
+	else {
+		// no such?
+	}
 }
 
 #define STRING_ERROR(ret) do { c->top = head; return ret; } while(0)
 
 static int lept_parse_string(lept_context* c, lept_value* v) {
     size_t head = c->top, len;
-    unsigned u;
+    unsigned u, h, l;
     const char* p;
     EXPECT(c, '\"');
     p = c->json;
@@ -128,7 +159,20 @@ static int lept_parse_string(lept_context* c, lept_value* v) {
                     case 'u':
                         if (!(p = lept_parse_hex4(p, &u)))
                             STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
-                        /* \TODO surrogate handling */
+                        /* surrogate handling */
+						if (0xD800 <= u && u <= 0xDBFF) {
+							if (*p++ != '\\')
+								STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+							if (*p++ != 'u')
+								STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+							h = u;
+							if (!(p = lept_parse_hex4(p, &u)))
+								STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+							if (!(0xDC00 <= u && u <= 0xDFFF))
+								STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_SURROGATE);
+							l = u;
+							u = 0x10000 + (h - 0xD800) * 0x400 + (l - 0xDC00);
+						}
                         lept_encode_utf8(c, u);
                         break;
                     default:
